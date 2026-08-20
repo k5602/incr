@@ -15,29 +15,28 @@ enum InputKind {
 }
 
 fn extract_input_kind(ty: &Type) -> InputKind {
-    if let Type::Path(TypePath { path, .. }) = ty {
-        if let Some(last_seg) = path.segments.last() {
-            if let PathArguments::AngleBracketed(args) = &last_seg.arguments {
-                let types: Vec<&Type> = args
-                    .args
-                    .iter()
-                    .filter_map(|arg| match arg {
-                        GenericArgument::Type(t) => Some(t),
-                        _ => None,
-                    })
-                    .collect();
+    if let Type::Path(TypePath { path, .. }) = ty
+        && let Some(last_seg) = path.segments.last()
+        && let PathArguments::AngleBracketed(args) = &last_seg.arguments
+    {
+        let types: Vec<&Type> = args
+            .args
+            .iter()
+            .filter_map(|arg| match arg {
+                GenericArgument::Type(t) => Some(t),
+                _ => None,
+            })
+            .collect();
 
-                if types.len() == 2 {
-                    return InputKind::Table {
-                        key_ty: Box::new((*types[0]).clone()),
-                        val_ty: Box::new((*types[1]).clone()),
-                    };
-                } else if types.len() == 1 {
-                    return InputKind::Scalar {
-                        val_ty: Box::new((*types[0]).clone()),
-                    };
-                }
-            }
+        if types.len() == 2 {
+            return InputKind::Table {
+                key_ty: Box::new((*types[0]).clone()),
+                val_ty: Box::new((*types[1]).clone()),
+            };
+        } else if types.len() == 1 {
+            return InputKind::Scalar {
+                val_ty: Box::new((*types[0]).clone()),
+            };
         }
     }
 
