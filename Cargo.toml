@@ -1,0 +1,14 @@
+[package]
+name = "incr"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = ["incr-macros"]
+
+[dependencies]
+incr-macros = { path = "incr-macros", version = "0.1.0" }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_abi = "warn"
