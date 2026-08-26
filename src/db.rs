@@ -190,6 +190,21 @@ pub trait Database {
     fn memo_table_mut(&mut self) -> &mut MemoTable;
 }
 
+/// Counters describing engine work so far. Values are cumulative.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Returns served from a memo already fresh in this epoch.
+    pub hits: u64,
+    /// Returns served by transitive dependency validation of a stale-by-epoch
+    /// memo whose inputs provably did not change.
+    pub reused: u64,
+    /// User query functions executed.
+    pub recomputes: u64,
+    /// Recomputes whose output equaled the cached value, keeping the old
+    /// changed_at (Eq cutoff protected downstream caches).
+    pub cutoffs: u64,
+}
+
 /// Central memoization and revision table.
 #[derive(Default, Debug)]
 pub struct MemoTable {
@@ -198,6 +213,7 @@ pub struct MemoTable {
     /// changed_at epoch per noted input. Setters write the effective epoch
     /// (after Eq cutoff), so validation can compare against memo verified_at.
     input_changed_at: RefCell<HashMap<InputId, Epoch>>,
+    stats: core::cell::Cell<Stats>,
 }
 
 impl MemoTable {
@@ -206,6 +222,7 @@ impl MemoTable {
             epoch: Epoch::ZERO,
             memos: RefCell::new(HashMap::new()),
             input_changed_at: RefCell::new(HashMap::new()),
+            stats: core::cell::Cell::new(Stats::default()),
         }
     }
 
@@ -255,6 +272,16 @@ impl MemoTable {
 
     pub fn input_changed_at(&self, id: &InputId) -> Option<Epoch> {
         self.input_changed_at.borrow().get(id).copied()
+    }
+
+    pub fn stats(&self) -> Stats {
+        self.stats.get()
+    }
+
+    pub(crate) fn bump_stats(&self, which: impl FnOnce(&mut Stats)) {
+        let mut s = self.stats.get();
+        which(&mut s);
+        self.stats.set(s);
     }
 }
 

@@ -116,12 +116,14 @@ where
     if let Some(memo) = &previous {
         // Fresh within this epoch.
         if memo.verified_at == epoch {
+            table.bump_stats(|s| s.hits += 1);
             return memo.value.clone();
         }
         // Stale by epoch, but every recorded dep proves the value unchanged
         // since verification: reuse without re-running compute.
         if dep_tree_clean(table, &query_id) {
             table.update_verified_at(&query_id, epoch);
+            table.bump_stats(|s| s.reused += 1);
             return memo.value.clone();
         }
     }
@@ -153,6 +155,7 @@ where
     STACK.with(|stack| stack.borrow_mut().push(Frame::default()));
     let guard = CycleGuard;
 
+    table.bump_stats(|s| s.recomputes += 1);
     let value = compute(db);
 
     let deps = STACK
@@ -168,7 +171,10 @@ where
     // Eq cutoff: same output means downstream caches remain valid, so keep
     // the old changed_at instead of advertising a change that did not happen.
     let changed_at = match &previous {
-        Some(old) if old.value == value => old.changed_at,
+        Some(old) if old.value == value => {
+            table.bump_stats(|s| s.cutoffs += 1);
+            old.changed_at
+        }
         _ => epoch,
     };
 

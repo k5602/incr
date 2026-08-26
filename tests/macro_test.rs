@@ -1,4 +1,7 @@
-use incr::{CycleError, Db, DepId, Epoch, InputField, InputId, InputTable, Memo, MemoTable, QueryId, query};
+use incr::{
+    CycleError, Db, DepId, Epoch, InputField, InputId, InputTable, Memo, MemoTable, QueryId, Stats,
+    query,
+};
 use std::cell::Cell;
 
 thread_local! {
@@ -232,4 +235,41 @@ fn test_eq_cutoff_keeps_changed_at() {
     let memo: Memo<usize> = db.memo.get_memo(&id).unwrap();
     assert_eq!(memo.changed_at, Epoch(1));
     assert_eq!(memo.verified_at, Epoch(2));
+}
+
+#[test]
+fn test_stats_track_engine_work() {
+    let mut db = TestDb::default();
+    db.set_config("abc".to_string());
+
+    // Both fresh computes.
+    counted(&db);
+    stable_len(&db);
+    assert_eq!(
+        db.memo.stats(),
+        Stats {
+            hits: 0,
+            reused: 0,
+            recomputes: 2,
+            cutoffs: 0,
+        }
+    );
+
+    // Same-epoch reruns: pure hits.
+    counted(&db);
+    stable_len(&db);
+    assert_eq!(db.memo.stats().hits, 2);
+
+    // Same-value input set: epoch bumps, validation proves the tree clean,
+    // so no user code runs and changed_at stays put.
+    db.set_config("abc".to_string());
+    counted(&db);
+    assert_eq!(db.memo.stats().reused, 1);
+    assert_eq!(db.memo.stats().recomputes, 2);
+
+    // Changed bytes, same length output: recompute runs once, Eq cutoff fires.
+    db.set_config("xyz".to_string());
+    counted(&db);
+    let s = db.memo.stats();
+    assert_eq!((s.recomputes, s.cutoffs), (3, 1));
 }
