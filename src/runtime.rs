@@ -54,10 +54,10 @@ fn dep_tree_clean(table: &MemoTable, root: &QueryId) -> bool {
     visit(table, root, &mut HashSet::new())
 }
 
-/// Runs a query with memo hits within the current epoch.
+/// Runs a query with memoization, dependency validation, and Eq cutoff.
 ///
-/// A memo counts as fresh only when `verified_at == epoch`. Any input change
-/// bumps the epoch, so stale memos recompute until dependency validation lands.
+/// Early exits happen before any frame is pushed so returns can never leak a
+/// frame; a leaked frame would swallow later record_input_dep calls.
 pub fn execute_query<DB: Database, V, F>(db: &DB, query_id: QueryId, compute: F) -> V
 where
     V: Clone + PartialEq + Debug + 'static,
@@ -66,48 +66,57 @@ where
     let table = db.memo_table();
     let epoch = table.epoch();
 
-    // The enclosing query depends on this query even when this call hits a
-    // memo, validation will compare changed_at, so the edge matters either way.
+    // Parent edge registers first: whatever we do next (hit, validate, or
+    // recompute), the enclosing query depends on us. Our own frame is not
+    // pushed yet, so this lands on the true parent.
     STACK.with(|stack| {
         if let Some(frame) = stack.borrow_mut().last_mut() {
             frame.deps.push(DepId::Query(query_id.clone()));
         }
     });
 
-    STACK.with(|stack| stack.borrow_mut().push(Frame::default()));
+    let previous = table.get_memo::<V>(&query_id);
 
-    if let Some(memo) = table.get_memo::<V>(&query_id) {
+    if let Some(memo) = &previous {
+        // Fresh within this epoch.
         if memo.verified_at == epoch {
-            return memo.value;
+            return memo.value.clone();
         }
-        // Stale by epoch, but clean if every recorded dep proves the value
-        // unchanged since verification; reuse without re-running compute.
+        // Stale by epoch, but every recorded dep proves the value unchanged
+        // since verification: reuse without re-running compute.
         if dep_tree_clean(table, &query_id) {
             table.update_verified_at(&query_id, epoch);
-            STACK.with(|stack| {
-                stack.borrow_mut().pop();
-            });
-            return memo.value;
+            return memo.value.clone();
         }
     }
+
+    // Frame exists strictly around compute; inputs and nested queries record
+    // into it through record_input_dep and their own registrations.
+    STACK.with(|stack| stack.borrow_mut().push(Frame::default()));
 
     let value = compute(db);
 
     let deps = STACK
         .with(|stack| stack.borrow_mut().pop())
-        .map(|frame| frame.deps);
+        .map(|frame| frame.deps)
+        .unwrap_or_default();
 
-    if let Some(deps) = deps {
-        table.insert_memo(
-            query_id,
-            Memo {
-                value: value.clone(),
-                verified_at: epoch,
-                changed_at: epoch,
-                deps,
-            },
-        );
-    }
+    // Eq cutoff: same output means downstream caches remain valid, so keep
+    // the old changed_at instead of advertising a change that did not happen.
+    let changed_at = match &previous {
+        Some(old) if old.value == value => old.changed_at,
+        _ => epoch,
+    };
+
+    table.insert_memo(
+        query_id,
+        Memo {
+            value: value.clone(),
+            verified_at: epoch,
+            changed_at,
+            deps,
+        },
+    );
 
     value
 }

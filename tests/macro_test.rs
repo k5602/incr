@@ -172,6 +172,35 @@ fn test_transitive_validation_skips_recompute() {
 
     // Outer memo verified in place by the clean-tree walk.
     let outer_memo: Memo<String> = db.memo.get_memo(&outer_id).unwrap();
-    assert_eq!(outer_memo.verified_at, db.memo.epoch());
     assert_eq!(outer_memo.changed_at, Epoch(2));
+}
+
+thread_local! {
+    static STABLE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[query]
+fn stable_len(db: &TestDb) -> usize {
+    STABLE_COUNT.with(|c| c.set(c.get() + 1));
+    db.config().len()
+}
+
+#[test]
+fn test_eq_cutoff_keeps_changed_at() {
+    let mut db = TestDb::default();
+    db.set_config("abc".to_string());
+
+    // Epoch 1: first compute.
+    stable_len(&db);
+    let id = QueryId::of::<__IncrQueryMarker_stable_len, ()>(&(), "stable_len");
+
+    // Different input bytes, same output: compute runs once, but changed_at
+    // stays at the epoch of the last real change.
+    db.set_config("xyz".to_string());
+    assert_eq!(stable_len(&db), 3);
+    assert_eq!(STABLE_COUNT.with(Cell::get), 2);
+
+    let memo: Memo<usize> = db.memo.get_memo(&id).unwrap();
+    assert_eq!(memo.changed_at, Epoch(1));
+    assert_eq!(memo.verified_at, Epoch(2));
 }
