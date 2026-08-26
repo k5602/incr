@@ -195,6 +195,9 @@ pub trait Database {
 pub struct MemoTable {
     epoch: Epoch,
     memos: RefCell<HashMap<QueryId, Box<dyn AnyMemo>>>,
+    /// changed_at epoch per noted input. Setters write the effective epoch
+    /// (after Eq cutoff), so validation can compare against memo verified_at.
+    input_changed_at: RefCell<HashMap<InputId, Epoch>>,
 }
 
 impl MemoTable {
@@ -202,6 +205,7 @@ impl MemoTable {
         Self {
             epoch: Epoch::ZERO,
             memos: RefCell::new(HashMap::new()),
+            input_changed_at: RefCell::new(HashMap::new()),
         }
     }
 
@@ -242,6 +246,15 @@ impl MemoTable {
         } else {
             false
         }
+    }
+
+    /// Records the effective changed_at of one input read path.
+    pub fn note_input(&self, id: InputId, changed_at: Epoch) {
+        self.input_changed_at.borrow_mut().insert(id, changed_at);
+    }
+
+    pub fn input_changed_at(&self, id: &InputId) -> Option<Epoch> {
+        self.input_changed_at.borrow().get(id).copied()
     }
 }
 

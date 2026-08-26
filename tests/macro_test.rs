@@ -1,4 +1,4 @@
-use incr::{Db, DepId, InputField, InputId, InputTable, Memo, MemoTable, QueryId, query};
+use incr::{Db, DepId, Epoch, InputField, InputId, InputTable, Memo, MemoTable, QueryId, query};
 use std::cell::Cell;
 
 thread_local! {
@@ -95,16 +95,16 @@ fn test_query_memo_hit_and_epoch_invalidation() {
     assert_eq!(counted(&db), 3);
     assert_eq!(COMPUTE_COUNT.with(Cell::get), 1);
 
-    // Setting the same value still bumps the epoch (cutoff preserves only
-    // changed_at). Without dependency tracking any new epoch recomputes.
+    // Same-value set bumps the epoch but keeps changed_at; dep validation
+    // proves the memo clean, so no recompute.
     db.set_config("abc".to_string());
     assert_eq!(counted(&db), 3);
-    assert_eq!(COMPUTE_COUNT.with(Cell::get), 2);
+    assert_eq!(COMPUTE_COUNT.with(Cell::get), 1);
 
     // Changed input recomputes with the new value.
     db.set_config("abcd".to_string());
     assert_eq!(counted(&db), 4);
-    assert_eq!(COMPUTE_COUNT.with(Cell::get), 3);
+    assert_eq!(COMPUTE_COUNT.with(Cell::get), 2);
 }
 
 #[test]
@@ -150,4 +150,28 @@ fn test_dependency_recording() {
         )]
     );
     assert_eq!(inner_memo.verified_at, db.memo.epoch());
+}
+
+#[test]
+fn test_transitive_validation_skips_recompute() {
+    let mut db = TestDb::default();
+    db.set_src(1, "a".to_string());
+    db.set_config("c".to_string());
+
+    // Warm both memos.
+    outer(&db, 1);
+    single_arg(&db, 1);
+
+    // Touch only an input inner does not read.
+    db.set_extra("noise".to_string(), 7);
+
+    let outer_id = QueryId::of::<__IncrQueryMarker_outer, u32>(&1u32, "outer");
+    let before = COMPUTE_COUNT.with(Cell::get);
+    assert_eq!(outer(&db, 1), "c:a");
+    assert_eq!(COMPUTE_COUNT.with(Cell::get), before);
+
+    // Outer memo verified in place by the clean-tree walk.
+    let outer_memo: Memo<String> = db.memo.get_memo(&outer_id).unwrap();
+    assert_eq!(outer_memo.verified_at, db.memo.epoch());
+    assert_eq!(outer_memo.changed_at, Epoch(2));
 }
