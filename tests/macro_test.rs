@@ -1,4 +1,4 @@
-use incr::{Db, DepId, Epoch, InputField, InputId, InputTable, Memo, MemoTable, QueryId, query};
+use incr::{CycleError, Db, DepId, Epoch, InputField, InputId, InputTable, Memo, MemoTable, QueryId, query};
 use std::cell::Cell;
 
 thread_local! {
@@ -177,6 +177,35 @@ fn test_transitive_validation_skips_recompute() {
 
 thread_local! {
     static STABLE_COUNT: Cell<usize> = const { Cell::new(0) };
+}
+
+#[query]
+fn cyc_a(db: &TestDb) -> usize {
+    1 + cyc_b(db)
+}
+
+#[query]
+fn cyc_b(db: &TestDb) -> usize {
+    1 + cyc_a(db)
+}
+
+#[test]
+fn test_cycle_detection_panics_with_trace() {
+    let mut db = TestDb::default();
+    db.set_config("cfg".to_string());
+
+    let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cyc_a(&db)))
+        .err()
+        .and_then(|payload| payload.downcast_ref::<CycleError>().cloned())
+        .expect("cyclic query must panic with CycleError");
+
+    let names: Vec<_> = err.stack.iter().map(|id| id.name()).collect();
+    assert_eq!(names, ["cyc_a", "cyc_b"]);
+    assert_eq!(err.to_string(), "cycle detected: cyc_a -> cyc_b -> cyc_a");
+
+    // Guard restored both stacks during unwind: same-thread queries work.
+    assert_eq!(stable_len(&db), 3);
+    assert_eq!(STABLE_COUNT.with(Cell::get), 1);
 }
 
 #[query]

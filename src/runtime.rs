@@ -12,6 +12,42 @@ struct Frame {
 thread_local! {
     /// Stack of active computations. Frames nest through `execute_query`.
     static STACK: RefCell<Vec<Frame>> = const { RefCell::new(Vec::new()) };
+    /// Query ids currently being computed, innermost last. Only the compute
+    /// path touches it; cache hits reuse values and cannot form cycles.
+    static ACTIVE: RefCell<Vec<QueryId>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Detected dependency cycle. `stack` lists every query from the outermost
+/// active computation down to the repeated one.
+#[derive(Clone, Debug)]
+pub struct CycleError {
+    pub stack: Vec<QueryId>,
+}
+
+impl std::fmt::Display for CycleError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "cycle detected:")?;
+        for id in &self.stack {
+            write!(f, " {} ->", id.name())?;
+        }
+        write!(f, " {}", self.stack[0].name())
+    }
+}
+
+/// Pops ACTIVE and the computation frame during unwind so a recovered panic
+/// cannot leave stale ids or dead frames that would corrupt later queries on
+/// the same thread.
+struct CycleGuard;
+
+impl Drop for CycleGuard {
+    fn drop(&mut self) {
+        ACTIVE.with(|active| {
+            active.borrow_mut().pop();
+        });
+        STACK.with(|stack| {
+            stack.borrow_mut().pop();
+        });
+    }
 }
 
 pub fn record_input_dep(id: InputId) {
@@ -90,16 +126,44 @@ where
         }
     }
 
+    // Re-entering a query that is still computing means a dependency cycle;
+    // panic with the active stack as the trace.
+    let cycle_free = ACTIVE.with(|active| {
+        let mut active = active.borrow_mut();
+        match active.iter().position(|q| q == &query_id) {
+            Some(_) => false,
+            None => {
+                active.push(query_id.clone());
+                true
+            }
+        }
+    });
+    if !cycle_free {
+        let trace = ACTIVE.with(|active| active.borrow().clone());
+        // panic_any keeps the typed payload downcastable by callers.
+        std::panic::panic_any(CycleError { stack: trace });
+    }
+
     // Frame exists strictly around compute; inputs and nested queries record
-    // into it through record_input_dep and their own registrations.
+    // into it through record_input_dep and their own registrations. The guard
+    // unwinds both stacks when compute panics, so normal-path pops below are
+    // safe only because they happen while the guard is still alive: the deps
+    // frame is drained with take() first, leaving an empty placeholder for
+    // the guard to discard.
     STACK.with(|stack| stack.borrow_mut().push(Frame::default()));
+    let guard = CycleGuard;
 
     let value = compute(db);
 
     let deps = STACK
-        .with(|stack| stack.borrow_mut().pop())
-        .map(|frame| frame.deps)
+        .with(|stack| {
+            stack
+                .borrow_mut()
+                .last_mut()
+                .map(|frame| std::mem::take(&mut frame.deps))
+        })
         .unwrap_or_default();
+    drop(guard);
 
     // Eq cutoff: same output means downstream caches remain valid, so keep
     // the old changed_at instead of advertising a change that did not happen.
