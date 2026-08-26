@@ -115,7 +115,17 @@ pub fn expand_derive_db(input: DeriveInput) -> syn::Result<TokenStream> {
 
                     pub fn #setter_ident(&mut self, key: #key_ty, value: #val_ty) {
                         let epoch = self.#memo_ident.bump_epoch();
+                        let input_id = ::incr::InputId::of::<#marker_ident, #key_ty>(
+                            &key,
+                            #field_name_str,
+                        );
+                        let lookup = key.clone();
                         self.#field_ident.set(key, value, epoch);
+                        // set() applies Eq cutoff; the stored epoch is the
+                        // effective changed_at either way.
+                        if let Some(at) = self.#field_ident.changed_at(&lookup) {
+                            self.#memo_ident.note_input(input_id, at);
+                        }
                     }
                 });
             }
@@ -132,7 +142,14 @@ pub fn expand_derive_db(input: DeriveInput) -> syn::Result<TokenStream> {
 
                     pub fn #setter_ident(&mut self, value: #val_ty) {
                         let epoch = self.#memo_ident.bump_epoch();
+                        let input_id = ::incr::InputId::of::<#marker_ident, ()>(
+                            &(),
+                            #field_name_str,
+                        );
                         self.#field_ident.set(value, epoch);
+                        if let Some(at) = self.#field_ident.changed_at() {
+                            self.#memo_ident.note_input(input_id, at);
+                        }
                     }
                 });
             }
