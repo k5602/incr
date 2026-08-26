@@ -1,4 +1,13 @@
 use incr::{Db, InputField, InputTable, MemoTable, query};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static COMPUTE_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+#[query]
+fn counted(db: &TestDb) -> usize {
+    COMPUTE_COUNT.fetch_add(1, Ordering::SeqCst);
+    db.config().len()
+}
 
 #[derive(Default, Db)]
 struct TestDb {
@@ -63,4 +72,29 @@ fn test_macro_expansion_and_methods() {
         multi_args(&db, "MSG".to_string(), 1),
         "MSG:hello world from incr"
     );
+}
+
+#[test]
+fn test_query_memo_hit_and_epoch_invalidation() {
+    let mut db = TestDb::default();
+    db.set_config("abc".to_string());
+
+    // First call computes and stores the memo.
+    assert_eq!(counted(&db), 3);
+    assert_eq!(COMPUTE_COUNT.load(Ordering::SeqCst), 1);
+
+    // Second call in the same epoch is a memo hit.
+    assert_eq!(counted(&db), 3);
+    assert_eq!(COMPUTE_COUNT.load(Ordering::SeqCst), 1);
+
+    // Setting the same value still bumps the epoch (cutoff preserves only
+    // changed_at). Without dependency tracking any new epoch recomputes.
+    db.set_config("abc".to_string());
+    assert_eq!(counted(&db), 3);
+    assert_eq!(COMPUTE_COUNT.load(Ordering::SeqCst), 2);
+
+    // Changed input recomputes with the new value.
+    db.set_config("abcd".to_string());
+    assert_eq!(counted(&db), 4);
+    assert_eq!(COMPUTE_COUNT.load(Ordering::SeqCst), 3);
 }

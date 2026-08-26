@@ -1,13 +1,34 @@
-use crate::db::{Database, InputId, QueryId};
+use crate::db::{Database, InputId, Memo, QueryId};
+use std::fmt::Debug;
 
 pub fn record_input_dep(_id: InputId) {
     // TODO Connects to active query stack
 }
 
-pub fn execute_query<DB: Database, V, F>(_db: &DB, _query_id: QueryId, compute: F) -> V
+/// Runs a query with memo hits within the current epoch.
+pub fn execute_query<DB: Database, V, F>(db: &DB, query_id: QueryId, compute: F) -> V
 where
+    V: Clone + PartialEq + Debug + 'static,
     F: FnOnce(&DB) -> V,
 {
-    // TODO Direct compute for now; connects to MemoTable later
-    compute(_db)
+    let table = db.memo_table();
+    let epoch = table.epoch();
+
+    if let Some(memo) = table.get_memo::<V>(&query_id)
+        && memo.verified_at == epoch
+    {
+        return memo.value;
+    }
+
+    let value = compute(db);
+    table.insert_memo(
+        query_id,
+        Memo {
+            value: value.clone(),
+            verified_at: epoch,
+            changed_at: epoch,
+            deps: Vec::new(),
+        },
+    );
+    value
 }
