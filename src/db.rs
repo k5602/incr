@@ -236,12 +236,7 @@ impl MemoTable {
     }
 
     pub fn get_memo_raw(&self, id: &QueryId) -> Option<std::cell::Ref<'_, Box<dyn AnyMemo>>> {
-        let borrowed = self.memos.borrow();
-        if borrowed.contains_key(id) {
-            Some(std::cell::Ref::map(borrowed, |m| m.get(id).unwrap()))
-        } else {
-            None
-        }
+        std::cell::Ref::filter_map(self.memos.borrow(), |m| m.get(id)).ok()
     }
 
     pub fn get_memo<V: Clone + 'static>(&self, id: &QueryId) -> Option<Memo<V>> {
